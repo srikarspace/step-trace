@@ -16,7 +16,9 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
-import type { Step } from '../parser/types'
+import { cn } from '@/lib/utils'
+import { toneOf, toneText } from '@/lib/tone'
+import type { Step } from '@/parser/types'
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
   Bash: SquareTerminal,
@@ -46,9 +48,7 @@ function iconFor(step: Step): LucideIcon {
   }
 }
 
-/** Line icon tinted by effect; red when the step failed. */
 export function StepIcon({ step }: { step: Step }) {
   const Icon = iconFor(step)
-  const tone = step.status === 'error' ? 'error' : step.effect
-  return <Icon className={`step-icon tone-${tone}`} size={14} strokeWidth={2} aria-hidden />
+  return <Icon className={cn('flex-none', toneText[toneOf(step)])} size={14} strokeWidth={2} aria-hidden />
 }

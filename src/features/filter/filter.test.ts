@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { Step } from '../parser/types'
+import type { Step } from '@/parser/types'
 import { applyFilters, chipButtons, chipOptions, DEFAULT_PINNED, parseFilter, type FilterState } from './filter'
 
 const step = (over: Partial<Step>): Step => ({

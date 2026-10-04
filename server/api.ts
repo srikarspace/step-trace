@@ -1,4 +1,4 @@
-import { open, readdir, readFile, stat } from 'node:fs/promises'
+import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
@@ -10,13 +10,11 @@ export type SessionEntry = {
   size: number
 }
 
-/** Same rule as shrek's `paths.ts`: `$SHREK_STATE_DIR` or `~/.shrek`. */
 export function projectsDir(): string {
   const override = process.env.SHREK_STATE_DIR?.trim()
   return join(override || join(homedir(), '.shrek'), 'projects')
 }
 
-/** Files passed on the command line, readable even outside the projects dir. */
 const extraFiles = new Set<string>()
 export function allowFile(path: string): string {
   const full = resolve(path)
@@ -30,7 +28,6 @@ function isReadable(path: string): boolean {
   return full.startsWith(projectsDir() + sep) && full.endsWith('.jsonl')
 }
 
-/** First user prompt, else the session's argv. Only the head of the file is read. */
 function titleOf(head: string): { title: string; project: string } {
   let title = ''
   let project = ''
@@ -49,7 +46,6 @@ function titleOf(head: string): { title: string; project: string } {
 
 const HEAD_BYTES = 64 * 1024
 
-/** Only the start of a file: the listing is polled every second and must not read whole transcripts. */
 async function readHead(path: string): Promise<string> {
   const handle = await open(path, 'r')
   try {
@@ -61,7 +57,6 @@ async function readHead(path: string): Promise<string> {
   }
 }
 
-/** null when the file vanished between listing and reading, which happens while shrek writes. */
 async function entryFor(path: string): Promise<SessionEntry | null> {
   try {
     const [info, head] = await Promise.all([stat(path), readHead(path)])
@@ -85,15 +80,42 @@ export async function listSessions(): Promise<SessionEntry[]> {
   return entries.filter((e): e is SessionEntry => e !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)
 }
 
-type ApiResponse = { status: number; type: string; body: string }
+type ApiResponse = { status: number; type: string; headers: Record<string, string>; body: string }
 
 const json = (status: number, value: unknown): ApiResponse => ({
   status,
   type: 'application/json',
+  headers: {},
   body: JSON.stringify(value),
 })
 
-/** `GET /api/sessions` and `GET /api/session?path=`. Shared by Vite dev and the Bun server. */
+const NEWLINE = 0x0a
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function readFrom(path: string, offset: number): Promise<{ start: number; end: number; text: string }> {
+  const handle = await open(path, 'r')
+  try {
+    const { size } = await handle.stat()
+    const start = offset >= 0 && offset <= size ? offset : 0
+    const buffer = Buffer.alloc(size - start)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start)
+    const lastNewline = buffer.lastIndexOf(NEWLINE, bytesRead - 1)
+    const tail = buffer.toString('utf8', lastNewline + 1, bytesRead)
+    const length = tail.trim() && isJson(tail) ? bytesRead : lastNewline + 1
+    return { start, end: start + length, text: buffer.toString('utf8', 0, length) }
+  } finally {
+    await handle.close()
+  }
+}
+
 export async function handleApi(url: URL): Promise<ApiResponse | null> {
   if (url.pathname === '/api/sessions') {
     return json(200, { root: projectsDir(), sessions: await listSessions() })
@@ -101,9 +123,14 @@ export async function handleApi(url: URL): Promise<ApiResponse | null> {
   if (url.pathname === '/api/session') {
     const path = url.searchParams.get('path') ?? ''
     if (!isReadable(path)) return json(403, { error: `not a shrek session: ${path}` })
-    const text = await readFile(path, 'utf8').catch(() => null)
-    if (text === null) return json(404, { error: `no such file: ${path}` })
-    return { status: 200, type: 'text/plain; charset=utf-8', body: text }
+    const chunk = await readFrom(path, Number(url.searchParams.get('offset')) || 0).catch(() => null)
+    if (chunk === null) return json(404, { error: `no such file: ${path}` })
+    return {
+      status: 200,
+      type: 'text/plain; charset=utf-8',
+      headers: { 'x-start': String(chunk.start), 'x-end': String(chunk.end) },
+      body: chunk.text,
+    }
   }
   return null
 }

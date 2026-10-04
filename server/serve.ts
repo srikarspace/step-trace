@@ -14,7 +14,7 @@ const server = Bun.serve({
     const host = req.headers.get('host')?.replace(/:\d+$/, '')
     if (host !== '127.0.0.1' && host !== 'localhost') return new Response('Forbidden', { status: 403 })
     const api = await handleApi(url)
-    if (api) return new Response(api.body, { status: api.status, headers: { 'content-type': api.type } })
+    if (api) return new Response(api.body, { status: api.status, headers: { ...api.headers, 'content-type': api.type } })
     const assetPath = resolve(dist, `.${decodeURIComponent(url.pathname)}`)
     const asset = Bun.file(assetPath)
     if (assetPath.startsWith(dist + sep) && (await asset.exists())) return new Response(asset)

@@ -7,7 +7,6 @@ const READ_TOOLS = new Set(['Read', 'Grep', 'Glob'])
 const MUTATE_TOOLS = new Set(['Write', 'Edit', 'Bash'])
 const NAME_MAX = 120
 
-/** Unknown tools are `meta`, never guessed into read or mutate. */
 export function effectOfTool(name: string): Effect {
   if (READ_TOOLS.has(name)) return 'read'
   if (MUTATE_TOOLS.has(name)) return 'mutate'
@@ -26,7 +25,6 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-/** OpenAI content is a string or an array of parts. */
 function contentText(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -74,7 +72,6 @@ function readUsage(value: unknown): Usage | undefined {
   }
 }
 
-/** `arguments` is a JSON string the model wrote, so it can be anything. */
 function parseArgs(raw: unknown): { input?: unknown; badArgs?: string } {
   if (typeof raw !== 'string') return { input: raw }
   try {
@@ -84,47 +81,60 @@ function parseArgs(raw: unknown): { input?: unknown; badArgs?: string } {
   }
 }
 
-/** Parse one shrek transcript (`~/.shrek/projects/<slug>/<id>.jsonl`). Never throws. */
+export type ShrekParser = {
+  push(chunk: string): Session
+  finish(): Session
+}
+
 export function parseShrek(text: string, file = ''): Session {
-  const session: Session = {
+  const parser = createShrekParser(file)
+  parser.push(text)
+  return parser.finish()
+}
+
+export function createShrekParser(file = ''): ShrekParser {
+  const meta = {
     file,
-    sessionId: null,
-    cwd: null,
-    argv: [],
-    startedAt: null,
-    endedAt: null,
-    turn: null,
-    lines: [],
-    steps: [],
-    warnings: [],
+    sessionId: null as string | null,
+    cwd: null as string | null,
+    argv: [] as string[],
+    startedAt: null as number | null,
+    endedAt: null as number | null,
+    turn: null as Session['turn'],
   }
-
-  const rawLines = text.split('\n')
-  const lastNonEmpty = rawLines.findLastIndex((l) => l.trim() !== '')
-  rawLines.forEach((raw, i) => {
-    if (!raw.trim()) return
-    try {
-      session.lines.push(JSON.parse(raw))
-    } catch {
-      const why = i === lastNonEmpty ? 'truncated last line' : 'invalid JSON'
-      session.warnings.push(`line ${i + 1}: ${why}, skipped`)
-    }
-  })
-
-  const steps = session.steps
+  const lines: unknown[] = []
+  const steps: Step[] = []
+  const warnings: string[] = []
   const toolsByCallId = new Map<string, Step>()
   const stepsById = new Map<string, Step>()
-  /** What caused the next LLM call: the prompt, then the latest tool result. */
+  const fresh = new Set<Step>()
   let cause: string | null = null
   let prevTs: number | null = null
   let llmCalls = 0
   let lastLlmId: string | null = null
+  let lineNo = 0
+  let buffer = ''
+  let swallowNewline = false
+  let held: number | null = null
+  let dirty = true
+  let snapshot: Session | null = null
 
   function push(step: NewStep): Step {
     const full = { ...step, index: steps.length }
     steps.push(full)
     stepsById.set(full.id, full)
+    fresh.add(full)
     return full
+  }
+
+  function own(step: Step): Step {
+    if (fresh.has(step)) return step
+    const copy = { ...step, rawLines: [...step.rawLines] }
+    steps[copy.index] = copy
+    stepsById.set(copy.id, copy)
+    if (copy.toolCallId && toolsByCallId.get(copy.toolCallId) === step) toolsByCallId.set(copy.toolCallId, copy)
+    fresh.add(copy)
+    return copy
   }
 
   function systemStep(id: string, i: number, ts: number, label: string, name: string, extra: Partial<NewStep> = {}) {
@@ -150,22 +160,41 @@ export function parseShrek(text: string, file = ''): Session {
     })
   }
 
-  session.lines.forEach((value, i) => {
+  function parse(raw: string): { value: unknown } | null {
+    try {
+      return { value: JSON.parse(raw) }
+    } catch {
+      return null
+    }
+  }
+
+  function readLine(raw: string, parsed = parse(raw)) {
+    lineNo += 1
+    if (!raw.trim()) return
+    dirty = true
+    if (held !== null) warnings.push(`line ${held}: invalid JSON, skipped`)
+    held = parsed ? null : lineNo
+    if (!parsed) return
+    lines.push(parsed.value)
+    readRecord(parsed.value, lines.length - 1)
+  }
+
+  function readRecord(value: unknown, i: number) {
     if (!isObject(value)) {
-      session.warnings.push(`record ${i}: not an object, skipped`)
+      warnings.push(`record ${i}: not an object, skipped`)
       return
     }
     const line = value
     const parsedTs = Date.parse(str(line.timestamp) ?? '')
     const ts = Number.isNaN(parsedTs) ? (prevTs ?? 0) : parsedTs
     const uuid = str(line.uuid) ?? `record${i}`
-    session.startedAt ??= ts
-    session.endedAt = ts
+    meta.startedAt ??= ts
+    meta.endedAt = ts
 
     if (line.type === 'session') {
-      session.sessionId = str(line.sessionId) ?? null
-      session.cwd = str(line.cwd) ?? null
-      session.argv = Array.isArray(line.argv) ? line.argv.filter((a) => typeof a === 'string') : []
+      meta.sessionId = str(line.sessionId) ?? null
+      meta.cwd = str(line.cwd) ?? null
+      meta.argv = Array.isArray(line.argv) ? line.argv.filter((a) => typeof a === 'string') : []
     } else if (line.type === 'message' && isObject(line.message)) {
       readMessage(line, line.message, uuid, i, ts)
     } else if (line.type === 'turn.complete') {
@@ -173,7 +202,7 @@ export function parseShrek(text: string, file = ''): Session {
       const answer = str(line.answer) ?? ''
       const durationMs = num(line.durationMs) ?? null
       const ok = reason === 'answer'
-      session.turn = { reason, durationMs, answer }
+      meta.turn = { reason, durationMs, answer }
       systemStep(`${uuid}#end`, i, ts, ok ? 'Run finished' : 'Run stopped', ok ? 'with an answer' : `reason: ${reason}`, {
         status: ok ? 'ok' : 'error',
         text: answer,
@@ -185,7 +214,7 @@ export function parseShrek(text: string, file = ''): Session {
       systemStep(`${uuid}#unknown`, i, ts, 'Unknown record', String(line.type))
     }
     prevTs = ts
-  })
+  }
 
   function readMessage(line: Line, message: Line, uuid: string, i: number, ts: number) {
     const role = str(message.role)
@@ -228,15 +257,16 @@ export function parseShrek(text: string, file = ''): Session {
 
     if (role === 'tool') {
       const callId = str(message.tool_call_id) ?? ''
-      const step = toolsByCallId.get(callId)
-      if (!step) {
-        session.warnings.push(`record ${i}: tool result for unknown call ${callId}`)
+      const found = toolsByCallId.get(callId)
+      if (!found) {
+        warnings.push(`record ${i}: tool result for unknown call ${callId}`)
         systemStep(`${uuid}#orphan`, i, ts, 'Tool result without a call', callId, {
           text: content,
           bytes: byteLength(content),
         })
         return
       }
+      const step = own(found)
       const isError = typeof line.isError === 'boolean' ? line.isError : content.startsWith('Error:')
       const measured = num(line.durationMs)
       step.result = content
@@ -244,7 +274,7 @@ export function parseShrek(text: string, file = ''): Session {
       step.bytes = byteLength(content)
       step.status = isError ? 'error' : 'ok'
       const parent = step.parentId ? stepsById.get(step.parentId) : undefined
-      if (parent && isError) parent.childErrors += 1
+      if (parent && isError) own(parent).childErrors += 1
       step.tsEnd = ts
       if (measured !== undefined) step.tsStart = ts - measured
       step.durationMs = measured ?? ts - step.tsStart
@@ -344,7 +374,7 @@ export function parseShrek(text: string, file = ''): Session {
         effect: effectOfTool(toolName),
         status: 'pending' satisfies StepStatus,
         label: toolName,
-        name: oneLine(primaryArg(toolName, input, session.cwd)),
+        name: oneLine(primaryArg(toolName, input, meta.cwd)),
         type: 'tool',
         toolName,
         toolCallId: str(call.id),
@@ -359,5 +389,35 @@ export function parseShrek(text: string, file = ''): Session {
     })
   }
 
-  return session
+  function current(): Session {
+    if (snapshot && !dirty) return snapshot
+    dirty = false
+    fresh.clear()
+    const pending = held === null ? [] : [`line ${held}: truncated last line, skipped`]
+    snapshot = { ...meta, argv: [...meta.argv], lines, steps: steps.slice(), warnings: [...warnings, ...pending] }
+    return snapshot
+  }
+
+  return {
+    push(chunk) {
+      let text = buffer + chunk
+      if (swallowNewline && text.startsWith('\n')) text = text.slice(1)
+      swallowNewline = false
+      const parts = text.split('\n')
+      buffer = parts.pop() ?? ''
+      for (const raw of parts) readLine(raw)
+      const tail = buffer.trim() ? parse(buffer) : null
+      if (tail) {
+        readLine(buffer, tail)
+        buffer = ''
+        swallowNewline = true
+      }
+      return current()
+    },
+    finish() {
+      if (buffer) readLine(buffer)
+      buffer = ''
+      return current()
+    },
+  }
 }
