@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseShrek } from './shrek'
+import { createShrekParser, parseShrek } from './shrek'
 
 const T0 = Date.parse('2026-10-01T00:00:00.000Z')
 let n = 0
@@ -178,5 +178,52 @@ describe('parseShrek', () => {
       'mutate',
       'meta',
     ])
+  })
+
+  describe('createShrekParser', () => {
+    const run = () =>
+      [
+        session(),
+        user('do it', 10),
+        assistant({ reasoning: 'r', content: 'ok', tool_calls: [call('c1', 'Read', '{"file_path":"/repo/a.ts"}')] }, 500),
+        tool('c1', 'Error: missing', 540),
+        assistant({ content: 'done' }, 900),
+        line('turn.complete', { reason: 'answer', answer: 'done' }, 950),
+      ].join('\n') + '\n'
+
+    test('given a transcript split at every 7th character, when chunks are pushed, then the result equals one full parse', () => {
+      const text = run()
+      const parser = createShrekParser('f')
+      for (let i = 0; i < text.length; i += 7) parser.push(text.slice(i, i + 7))
+      const chunked = parser.finish()
+      const full = parseShrek(text, 'f')
+      expect(chunked.steps).toEqual(full.steps)
+      expect(chunked.warnings).toEqual(full.warnings)
+      expect(chunked.lines).toEqual(full.lines)
+    })
+
+    test('given a pending tool step, when its result arrives in a later chunk, then the earlier snapshot is not mutated', () => {
+      const text = run()
+      const at = text.lastIndexOf('\n', text.indexOf('"role":"tool"')) + 1
+      const parser = createShrekParser()
+      const before = parser.push(text.slice(0, at))
+      const pending = before.steps.find((s) => s.kind === 'tool')!
+      const after = parser.push(text.slice(at))
+      expect(pending.status).toBe('pending')
+      expect(after.steps.find((s) => s.kind === 'tool')?.status).toBe('error')
+      expect(before.steps.find((s) => s.kind === 'llm')?.childErrors).toBe(0)
+      expect(after.steps.find((s) => s.kind === 'llm')?.childErrors).toBe(1)
+    })
+
+    test('given no new complete line, when a chunk is pushed, then the same snapshot is returned', () => {
+      const parser = createShrekParser()
+      const first = parser.push(`${session()}\n`)
+      expect(parser.push('{"type":"mess')).toBe(first)
+    })
+
+    test('given an invalid line followed by a valid one, when parsed, then it is reported as invalid, not truncated', () => {
+      const parsed = parseShrek(`${session()}\n{oops\n${user('x', 1)}\n`)
+      expect(parsed.warnings).toEqual(['line 2: invalid JSON, skipped'])
+    })
   })
 })

@@ -1,6 +1,5 @@
-import type { Effect, Step } from '../parser/types'
+import type { Effect, Step } from '@/parser/types'
 
-/** A quick-filter button: a step kind, a group of tools, or one tool by name. */
 export type Chip = { id: string; label: string; effect: Effect; title?: string }
 type ChipDef = Chip & { test: (s: Step) => boolean }
 
@@ -18,17 +17,14 @@ const KIND_CHIPS: ChipDef[] = [
   { id: 'kind:system', label: 'System', effect: 'meta', title: 'System prompt and run end', test: (s) => s.kind === 'system' },
 ]
 
-/** The original DevTools-style type chips: tools grouped by what they do. */
 const GROUP_CHIPS: ChipDef[] = [
   { id: 'group:read', label: 'Read', effect: 'read', title: 'Read, Grep, Glob', test: tools('Read', 'Grep', 'Glob') },
   { id: 'group:write', label: 'Write', effect: 'mutate', title: 'Write, Edit', test: tools('Write', 'Edit') },
   { id: 'group:exec', label: 'Exec', effect: 'mutate', title: 'Bash', test: tools('Bash') },
 ]
 
-/** Same order as the original chip row: All, Prompt, Model, Read, Write, Exec, System. */
 export const DEFAULT_PINNED = ['kind:prompt', 'kind:model', 'group:read', 'group:write', 'group:exec', 'kind:system']
 
-/** Tools shrek has today, listed even before a session calls them. */
 const KNOWN_TOOLS: [string, Effect][] = [
   ['Bash', 'mutate'],
   ['Edit', 'mutate'],
@@ -48,7 +44,6 @@ function chipMatches(id: string, step: Step): boolean {
 
 export type ChipOptions = { kinds: Chip[]; groups: Chip[]; tools: Chip[] }
 
-/** Kinds, groups, then every known or called tool, so new shrek tools show up without a change here. */
 export function chipOptions(steps: Step[]): ChipOptions {
   const byName = new Map<string, Chip>()
   const add = (name: string, effect: Effect) => {
@@ -63,7 +58,6 @@ export function chipOptions(steps: Step[]): ChipOptions {
   }
 }
 
-/** Button order: the original row first, then pinned single tools. */
 export function chipButtons(options: ChipOptions, pinned: ReadonlySet<string>): Chip[] {
   const [prompt, model, system] = options.kinds
   const row = [prompt, model, ...options.groups, system, ...options.tools].filter((c): c is Chip => c !== undefined)
@@ -80,7 +74,6 @@ const KEYS: Record<string, (s: Step, v: string) => boolean> = {
 }
 export const FILTER_KEYS = Object.keys(KEYS)
 
-/** `tool:Bash -status:ok foo`. Unknown keys and empty values are invalid and ignored. */
 export function parseFilter(text: string): Token[] {
   return text
     .split(/\s+/)
@@ -97,7 +90,7 @@ export function parseFilter(text: string): Token[] {
 }
 
 const haystacks = new WeakMap<Step, string>()
-function haystack(step: Step): string {
+export function haystack(step: Step): string {
   let text = haystacks.get(step)
   if (text === undefined) {
     const input = step.input === undefined ? (step.badArgs ?? '') : JSON.stringify(step.input)
@@ -112,7 +105,6 @@ function tokenMatches(step: Step, token: Token): boolean {
   return KEYS[token.key]!(step, token.value)
 }
 
-/** Tokens AND together; positive repeats of one key OR. */
 export function matchesText(step: Step, tokens: Token[]): boolean {
   const byKey = new Map<string, Token[]>()
   for (const token of tokens) {
@@ -131,10 +123,8 @@ export function matchesText(step: Step, tokens: Token[]): boolean {
 
 export type FilterState = {
   text: string
-  /** Active chip ids; a step shows if it matches any. Empty shows everything. */
   chips: ReadonlySet<string>
   hideThinking: boolean
-  /** Absolute epoch ms, from brushing the overview. */
   range: readonly [number, number] | null
 }
 

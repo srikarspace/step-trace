@@ -10,3 +10,6 @@ dist/
 *.local.md
 /docs/archive/
 .playwright-mcp/
+
+# synthetic perf transcripts (scripts/fixture.ts)
+/.fixtures/
