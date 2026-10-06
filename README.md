@@ -35,6 +35,8 @@ The filter box and chips narrow the list to one tool, one kind of step or just t
 
 Leave it open while you run shrek and new sessions appear on their own.
 
+Where it's headed: [future phases](docs/future-phases.md).
+
 ## Run it
 
 ```sh

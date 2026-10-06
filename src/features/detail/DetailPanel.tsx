@@ -14,7 +14,7 @@ function tabsFor(step: Step): Tab[] {
 
 function InputTab({ step }: { step: Step }) {
   const banner = step.badArgs !== undefined ? 'Arguments were not valid JSON. Shown as sent.' : undefined
-  return <CodeBlock text={step.badArgs ?? JSON.stringify(step.input, null, 2)} banner={banner} />
+  return <CodeBlock text={step.badArgs ?? JSON.stringify(step.input ?? {}, null, 2)} banner={banner} />
 }
 
 function ReturnedTab({ step }: { step: Step }) {
